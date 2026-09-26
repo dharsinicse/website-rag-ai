@@ -12,6 +12,7 @@ from tenacity import (
 )
 
 from ingestion.crawler.robots import RobotsChecker
+from ingestion.crawler.sitemap import SitemapParser
 
 @dataclass
 class CrawledPage:
@@ -36,20 +37,72 @@ class WebCrawler:
         self.pages: list[CrawledPage] = []
 
         self.robots_checker = RobotsChecker()
+        self.sitemap_parser = SitemapParser()
 
         self.request_delay = 1.0
 
     def normalize_url(self, url: str) -> str:
-        """Normalize a URL by removing fragments."""
+        """Normalize a URL for consistent crawling and deduplication."""
 
         url, _ = urldefrag(url)
 
         parsed = urlparse(url)
 
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+
+        path = parsed.path
+
+        # Treat /about/ and /about as the same page.
+        if path != "/" and path.endswith("/"):
+            path = path.rstrip("/")
+
         return parsed._replace(
-            scheme=parsed.scheme.lower(),
-            netloc=parsed.netloc.lower(),
+            scheme=scheme,
+            netloc=netloc,
+            path=path,
         ).geturl()
+
+    def is_valid_url(self, url: str) -> bool:
+        """Check whether a URL is suitable for crawling."""
+
+        parsed = urlparse(url)
+
+        if parsed.scheme not in {"http", "https"}:
+            return False
+
+        if not parsed.netloc:
+            return False
+
+        ignored_extensions = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".webp",
+            ".svg",
+            ".ico",
+            ".mp4",
+            ".mp3",
+            ".avi",
+            ".mov",
+            ".zip",
+            ".rar",
+            ".7z",
+            ".exe",
+            ".css",
+            ".js",
+            ".xml",
+            ".json",
+            ".pdf",
+        }
+
+        path = parsed.path.lower()
+
+        return not any(
+            path.endswith(extension)
+            for extension in ignored_extensions
+        )
 
     def is_same_domain(
         self,
@@ -91,6 +144,16 @@ class WebCrawler:
 
         response.raise_for_status()
 
+        content_type = response.headers.get(
+            "Content-Type",
+            ""
+        ).lower()
+
+        if "text/html" not in content_type:
+            raise requests.RequestException(
+                f"Unsupported content type: {content_type}"
+            )
+
         return response.text
 
     def extract_page(
@@ -104,7 +167,17 @@ class WebCrawler:
         soup = BeautifulSoup(html, "lxml")
 
         for element in soup(
-            ["script", "style", "noscript"]
+            [
+                "script",
+                "style",
+                "noscript",
+                "svg",
+                "nav",
+                "footer",
+                "header",
+                "aside",
+                "form",
+            ]
         ):
             element.decompose()
 
@@ -112,13 +185,29 @@ class WebCrawler:
 
         if soup.title:
             title = soup.title.get_text(
-                strip=True
+                " ",
+                strip=True,
             )
+
+        content = (
+            soup.find("main")
+            or soup.find("article")
+            or soup.body
+            or soup
+        )
 
         text = soup.get_text(
             separator="\n",
             strip=True,
         )
+
+        lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+
+        cleaned_text = "\n".join(lines)
 
         return CrawledPage(
             url=url,
@@ -144,11 +233,10 @@ class WebCrawler:
                 anchor["href"],
             )
 
-            normalized_url = self.normalize_url(
-                absolute_url
-            )
+            normalized_url = self.normalize_url(absolute_url)
 
-            links.append(normalized_url)
+            if self.is_valid_url(normalized_url):
+                links.append(normalized_url)
 
         return links
 
@@ -156,6 +244,11 @@ class WebCrawler:
         """Recursively crawl a website."""
 
         start_url = self.normalize_url(start_url)
+
+        if not self.is_valid_url(start_url):
+            raise ValueError(
+                "start_url must be a valid HTTP/HTTPS webpage URL"
+            )
 
         parsed_start_url = urlparse(start_url)
 
@@ -172,6 +265,26 @@ class WebCrawler:
         queue: list[tuple[str, int]] = [
             (start_url, 0)
         ]
+
+        sitemap_urls = self.sitemap_parser.fetch_urls(
+            start_url
+        )
+
+        for sitemap_url in sitemap_urls:
+            normalized_url = self.normalize_url(
+                sitemap_url
+            )
+
+            if (
+                self.is_valid_url(normalized_url)
+                and self.is_same_domain(
+                    normalized_url,
+                    base_domain,
+                )
+            ):
+                queue.append(
+                    (normalized_url, 1)
+                )
 
         while queue and len(self.pages) < self.max_pages:
             current_url, depth = queue.pop(0)
