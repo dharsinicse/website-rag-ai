@@ -1,0 +1,9 @@
+# Company Overview
+
+Our platform provides enterprise artificial intelligence solutions.
+
+The platform supports document ingestion, semantic search, hybrid retrieval, and grounded answer generation.
+
+# Security
+
+The system validates uploaded documents and protects the application against unsafe inputs.
