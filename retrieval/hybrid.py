@@ -1,5 +1,5 @@
 from typing import Any
-
+from retrieval.reranker import CrossEncoderReranker
 
 class ReciprocalRankFusion:
     """Combine ranked retrieval results using Reciprocal Rank Fusion."""
@@ -175,5 +175,45 @@ class HybridRetriever:
         return self.fusion.fuse(
             vector_results=vector_results,
             keyword_results=keyword_results,
+            top_k=top_k,
+        )
+
+class RerankedHybridRetriever:
+    """Combine hybrid retrieval with Cross-Encoder reranking."""
+
+    def __init__(
+        self,
+        hybrid_retriever: HybridRetriever,
+        reranker: CrossEncoderReranker,
+    ):
+        self.hybrid_retriever = hybrid_retriever
+        self.reranker = reranker
+
+    def search(
+        self,
+        query: str,
+        query_vector: list[float],
+        top_k: int = 5,
+        candidate_k: int = 20,
+    ) -> list[dict]:
+        if not query.strip():
+            raise ValueError("Query cannot be empty")
+
+        if top_k <= 0:
+            raise ValueError("top_k must be greater than 0")
+
+        if candidate_k <= 0:
+            raise ValueError("candidate_k must be greater than 0")
+
+        candidates = self.hybrid_retriever.search(
+            query_vector=query_vector,
+            query=query,
+            top_k=candidate_k,
+            candidate_k=candidate_k,
+        )
+
+        return self.reranker.rerank(
+            query=query,
+            results=candidates,
             top_k=top_k,
         )
