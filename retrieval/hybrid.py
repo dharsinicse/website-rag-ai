@@ -179,12 +179,12 @@ class HybridRetriever:
         )
 
 class RerankedHybridRetriever:
-    """Combine hybrid retrieval with Cross-Encoder reranking."""
+    """Hybrid retriever with a safety guard around reranking."""
 
     def __init__(
         self,
         hybrid_retriever: HybridRetriever,
-        reranker: CrossEncoderReranker,
+        reranker,
     ):
         self.hybrid_retriever = hybrid_retriever
         self.reranker = reranker
@@ -196,6 +196,8 @@ class RerankedHybridRetriever:
         top_k: int = 5,
         candidate_k: int = 20,
     ) -> list[dict]:
+        """Retrieve candidates and safely apply reranking."""
+
         if not query.strip():
             raise ValueError("Query cannot be empty")
 
@@ -203,17 +205,64 @@ class RerankedHybridRetriever:
             raise ValueError("top_k must be greater than 0")
 
         if candidate_k <= 0:
-            raise ValueError("candidate_k must be greater than 0")
+            raise ValueError(
+                "candidate_k must be greater than 0"
+            )
 
-        candidates = self.hybrid_retriever.search(
+        # --------------------------------------------------
+        # 1. Get trusted first-stage hybrid results
+        # --------------------------------------------------
+        hybrid_results = self.hybrid_retriever.search(
             query_vector=query_vector,
             query=query,
-            top_k=candidate_k,
+            top_k=top_k,
             candidate_k=candidate_k,
         )
 
-        return self.reranker.rerank(
+        if not hybrid_results:
+            return []
+
+        # --------------------------------------------------
+        # 2. Rerank the hybrid candidates
+        # --------------------------------------------------
+        reranked_results = self.reranker.rerank(
             query=query,
-            results=candidates,
+            results=hybrid_results,
             top_k=top_k,
         )
+
+        if not reranked_results:
+            return hybrid_results
+
+        # --------------------------------------------------
+        # 3. Safety guard
+        #
+        # The first-stage hybrid result is our trusted
+        # baseline. If the reranker changes the top result,
+        # reject the reranking.
+        # --------------------------------------------------
+        hybrid_top = hybrid_results[0]
+        reranked_top = reranked_results[0]
+
+        hybrid_top_key = (
+            hybrid_top.get("source"),
+            hybrid_top.get("chunk_index"),
+        )
+
+        reranked_top_key = (
+            reranked_top.get("source"),
+            reranked_top.get("chunk_index"),
+        )
+
+        if hybrid_top_key != reranked_top_key:
+            print(
+                "WARNING: Reranker changed the top result. "
+                "Falling back to hybrid ranking."
+            )
+
+            return hybrid_results[:top_k]
+
+        # --------------------------------------------------
+        # 4. Reranker agrees with hybrid top result
+        # --------------------------------------------------
+        return reranked_results[:top_k]
