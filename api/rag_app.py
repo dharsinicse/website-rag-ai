@@ -31,8 +31,8 @@ def build_rag_pipeline() -> RAGPipeline:
     # 2. Load persisted knowledge base
     knowledge_base = KnowledgeBase(
         dimension=embedding_service.dimension,
-        vector_path="storage/ingestion_test/vectors",
-        keyword_path="storage/ingestion_test/keywords.pkl",
+        vector_path=settings.vector_index_path,
+        keyword_path=settings.keyword_index_path,
     )
 
     knowledge_base.load()

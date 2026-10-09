@@ -20,6 +20,12 @@ class Settings(BaseSettings):
 
     vector_store: str = "faiss"
 
+    
+    vector_index_path: str = "storage/knowledge_base/vectors"
+    keyword_index_path: str = "storage/knowledge_base/keywords.pkl"
+    upload_dir: str = "data/raw/uploads"
+    max_upload_size_mb: int = 10
+
     top_k: int = 5
     retrieval_candidates: int = 20
 

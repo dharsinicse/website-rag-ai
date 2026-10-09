@@ -45,6 +45,28 @@ class KnowledgeBase:
             str(self.keyword_path)
         )
 
+    
+    def save(self) -> None:
+        """Persist both vector and keyword indexes."""
+
+        self.vector_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self.keyword_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self.vector_store.save(
+            str(self.vector_path)
+        )
+
+        self.keyword_store.save(
+            str(self.keyword_path)
+        )
+
     @property
     def vector_count(self) -> int:
         """Return the number of indexed vectors."""
