@@ -12,6 +12,7 @@ from ingestion.loaders.document import (
 from ingestion.processors.pipeline import DocumentProcessor
 from retrieval.keyword.bm25_store import BM25KeywordStore
 from retrieval.vector.faiss_store import FAISSVectorStore
+from retrieval.knowledge_base_persistence import save_staged_indexes
 
 
 class IngestionService:
@@ -149,4 +150,77 @@ class IngestionService:
             "title": path.stem,
             "chunks": len(chunks),
             "status": "indexed",
+        }
+
+    def delete_document(
+        self,
+        source: str,
+        vector_path: str,
+        keyword_path: str,
+    ) -> dict[str, Any]:
+        """Delete a source from both indexes and persist the result."""
+        if not source:
+            raise ValueError("Source cannot be empty")
+
+        vector_store = self.vector_store
+        keyword_store = self.keyword_store
+
+        vector_count = sum(
+            item.get("source") == source
+            for item in vector_store.metadata
+        )
+        keyword_count = sum(
+            item.get("source") == source
+            for item in keyword_store.metadata
+        )
+
+        if vector_count != keyword_count:
+            raise RuntimeError(
+                "Vector and keyword indexes are inconsistent; "
+                "deletion was not performed."
+            )
+
+        if vector_count == 0:
+            return {
+                "source": source,
+                "deleted_chunks": 0,
+                "status": "not_found",
+            }
+
+        # Keep in-memory copies so a failure can restore the live stores.
+        original_vectors = vector_store.index
+        original_vector_metadata = list(vector_store.metadata)
+        original_documents = list(keyword_store.documents)
+        original_keyword_metadata = list(keyword_store.metadata)
+        original_tokens = list(keyword_store.tokenized_documents)
+        original_bm25 = keyword_store.bm25
+
+        try:
+            vector_deleted = vector_store.delete_by_source(source)
+            keyword_deleted = keyword_store.delete_by_source(source)
+
+            if vector_deleted != keyword_deleted:
+                raise RuntimeError(
+                    "Vector and keyword deletion counts do not match."
+                )
+
+            save_staged_indexes(
+                vector_store=vector_store,
+                keyword_store=keyword_store,
+                vector_path=vector_path,
+                keyword_path=keyword_path,
+            )
+        except Exception:
+            vector_store.index = original_vectors
+            vector_store.metadata = original_vector_metadata
+            keyword_store.documents = original_documents
+            keyword_store.metadata = original_keyword_metadata
+            keyword_store.tokenized_documents = original_tokens
+            keyword_store.bm25 = original_bm25
+            raise
+
+        return {
+            "source": source,
+            "deleted_chunks": vector_deleted,
+            "status": "deleted",
         }

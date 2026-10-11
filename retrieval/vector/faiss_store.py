@@ -63,6 +63,41 @@ class FAISSVectorStore(VectorStore):
         self.index.add(array)
 
         self.metadata.extend(metadata)
+    def delete_by_source(self, source: str) -> int:
+        """Remove all chunks matching a source and return the count."""
+        if not source:
+            raise ValueError("Source cannot be empty")
+
+        keep_indices = [
+            i
+            for i, item in enumerate(self.metadata)
+            if item.get("source") != source
+        ]
+
+        deleted_count = len(self.metadata) - len(keep_indices)
+
+        if deleted_count == 0:
+            return 0
+
+        old_vectors = self.index.reconstruct_n(
+            0,
+            self.index.ntotal,
+        )
+
+        kept_vectors = old_vectors[keep_indices]
+
+        new_index = faiss.IndexFlatIP(self.dimension)
+
+        if len(kept_vectors) > 0:
+            new_index.add(kept_vectors)
+
+        self.index = new_index
+        self.metadata = [
+            self.metadata[i]
+            for i in keep_indices
+        ]
+
+        return deleted_count
 
     def search(
         self,

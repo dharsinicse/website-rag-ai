@@ -45,6 +45,41 @@ class BM25KeywordStore(KeywordStore):
 
         self.bm25 = BM25Okapi(self.tokenized_documents)
 
+    def delete_by_source(self, source: str) -> int:
+        """Remove all chunks matching a source and return the count."""
+        if not source:
+            raise ValueError("Source cannot be empty")
+
+        keep_indices = [
+            i
+            for i, item in enumerate(self.metadata)
+            if item.get("source") != source
+        ]
+
+        deleted_count = len(self.metadata) - len(keep_indices)
+        if deleted_count == 0:
+            return 0
+
+        self.documents = [
+            self.documents[i]
+            for i in keep_indices
+        ]
+        self.metadata = [
+            self.metadata[i]
+            for i in keep_indices
+        ]
+        self.tokenized_documents = [
+            self._tokenize(document)
+            for document in self.documents
+        ]
+
+        self.bm25 = (
+            BM25Okapi(self.tokenized_documents)
+            if self.tokenized_documents
+            else None
+        )
+        return deleted_count
+
     def search(
         self,
         query: str,
