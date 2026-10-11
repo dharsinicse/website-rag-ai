@@ -62,6 +62,12 @@ async def ingest(file: UploadFile = File(...)):
         service = get_ingestion_service()
         result = service.ingest_file(str(saved_path))
 
+        if result["status"] == "duplicate":
+            raise HTTPException(
+                status_code=409,
+                detail="This document has already been indexed.",
+            )
+
         if result["status"] != "indexed":
             raise HTTPException(
                 status_code=422,

@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -60,20 +61,41 @@ class IngestionService:
             f"Unsupported file type: {suffix}"
         )
 
+    def calculate_file_hash(self, file_path: str) -> str:
+        """Calculate a SHA-256 fingerprint for a file."""
+        sha256 = hashlib.sha256()
+        with Path(file_path).open("rb") as file:
+            for block in iter(
+                lambda: file.read(1024 * 1024),
+                b"",
+            ):sha256.update(block)
+
+        return sha256.hexdigest()
+
     def ingest_file(
         self,
         file_path: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Ingest one document into FAISS and BM25."""
-
         path = Path(file_path)
 
+        file_hash = self.calculate_file_hash(file_path)
+        for item in self.keyword_store.metadata:
+            existing_metadata = item.get("metadata", {})
+            if existing_metadata.get("file_hash") == file_hash:
+                return {
+                    "source": str(path),
+                    "title": path.stem,
+                    "chunks": 0,
+                    "status": "duplicate",
+                }
         text = self.load_file(file_path)
 
         document_metadata = {
-            "document_type": path.suffix.lower().lstrip("."),
             **(metadata or {}),
+            "document_type": path.suffix.lower().lstrip("."),
+            "file_hash": file_hash,
         }
 
         processed = self.document_processor.process(
