@@ -4,7 +4,11 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from api.ingestion_app import get_ingestion_service
-from api.schemas.ingestion import IngestionResponse
+from api.schemas.ingestion import (
+    DocumentListResponse,
+    DocumentSummary,
+    IngestionResponse,
+)
 from config.settings import get_settings
 from api.rag_app import get_rag_pipeline
 
@@ -115,6 +119,45 @@ async def ingest(file: UploadFile = File(...)):
         ) from exc
     finally:
         await file.close()
+
+@router.get("/documents", response_model=DocumentListResponse)
+def list_documents():
+    """List indexed documents with their chunk counts."""
+    pipeline = get_rag_pipeline()
+    keyword_store = pipeline.retriever.hybrid_retriever.keyword_store
+
+    documents_by_id: dict[str, dict] = {}
+
+    for item in keyword_store.metadata:
+        metadata = item.get("metadata", {})
+        document_id = metadata.get("document_id")
+        source = item.get("source")
+
+        if not document_id or not source:
+            continue
+
+        if document_id not in documents_by_id:
+            documents_by_id[document_id] = {
+                "document_id": document_id,
+                "filename": metadata.get(
+                    "original_filename",
+                    Path(source).name,
+                ),
+                "source": source,
+                "chunks": 0,
+            }
+
+        documents_by_id[document_id]["chunks"] += 1
+
+    documents = [
+        DocumentSummary(**document)
+        for document in documents_by_id.values()
+    ]
+
+    return DocumentListResponse(
+        documents=documents,
+        total=len(documents),
+    )
 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str):
