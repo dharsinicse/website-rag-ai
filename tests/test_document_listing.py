@@ -195,3 +195,53 @@ def test_list_documents_rejects_blank_search(monkeypatch):
     response = client.get("/documents?search=%20%20%20")
 
     assert response.status_code == 422
+
+def test_get_document_returns_details_and_chunk_count(monkeypatch):
+    monkeypatch.setattr(
+        ingestion_routes,
+        "get_rag_pipeline",
+        lambda: mock_pipeline(sample_metadata()),
+    )
+
+    response = client.get("/documents/doc-1")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": "doc-1",
+        "filename": "guide.txt",
+        "source": "data/uploads/doc1.txt",
+        "chunks": 2,
+    }
+
+
+def test_get_document_uses_source_name_as_filename_fallback(monkeypatch):
+    metadata = [
+        {
+            "source": "data/uploads/legacy.txt",
+            "metadata": {"document_id": "doc-legacy"},
+        }
+    ]
+    monkeypatch.setattr(
+        ingestion_routes,
+        "get_rag_pipeline",
+        lambda: mock_pipeline(metadata),
+    )
+
+    response = client.get("/documents/doc-legacy")
+
+    assert response.status_code == 200
+    assert response.json()["filename"] == "legacy.txt"
+    assert response.json()["chunks"] == 1
+
+
+def test_get_document_returns_404_for_unknown_id(monkeypatch):
+    monkeypatch.setattr(
+        ingestion_routes,
+        "get_rag_pipeline",
+        lambda: mock_pipeline(sample_metadata()),
+    )
+
+    response = client.get("/documents/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document not found."

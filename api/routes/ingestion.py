@@ -193,6 +193,43 @@ def list_documents(
         offset=offset,
     )
 
+@router.get("/documents/{document_id}", response_model=DocumentSummary)
+def get_document(document_id: str):
+    """Return details for one indexed document."""
+    pipeline = get_rag_pipeline()
+    keyword_store = pipeline.retriever.hybrid_retriever.keyword_store
+
+    document = None
+
+    for item in keyword_store.metadata:
+        metadata = item.get("metadata", {})
+        current_id = metadata.get("document_id")
+        source = item.get("source")
+
+        if current_id != document_id or not source:
+            continue
+
+        if document is None:
+            document = {
+                "document_id": current_id,
+                "filename": metadata.get(
+                    "original_filename",
+                    Path(source).name,
+                ),
+                "source": source,
+                "chunks": 0,
+            }
+
+        document["chunks"] += 1
+
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found.",
+        )
+
+    return DocumentSummary(**document)
+
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str):
     """Delete an indexed document by its generated ID."""
