@@ -1,7 +1,7 @@
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 
 from api.ingestion_app import get_ingestion_service
 from api.schemas.ingestion import (
@@ -121,8 +121,13 @@ async def ingest(file: UploadFile = File(...)):
         await file.close()
 
 @router.get("/documents", response_model=DocumentListResponse)
-def list_documents():
-    """List indexed documents with their chunk counts."""
+def list_documents(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, min_length=1, max_length=200),
+    file_type: str | None = Query(default=None, min_length=1, max_length=10),
+):
+    """List indexed documents with pagination and optional filters."""
     pipeline = get_rag_pipeline()
     keyword_store = pipeline.retriever.hybrid_retriever.keyword_store
 
@@ -149,14 +154,43 @@ def list_documents():
 
         documents_by_id[document_id]["chunks"] += 1
 
-    documents = [
-        DocumentSummary(**document)
-        for document in documents_by_id.values()
-    ]
+    documents = list(documents_by_id.values())
+
+    if search is not None:
+        term = search.strip().casefold()
+        if not term:
+            raise HTTPException(
+                status_code=422,
+                detail="Search cannot contain only whitespace.",
+            )
+        documents = [
+            doc for doc in documents
+            if term in doc["filename"].casefold()
+        ]
+
+    if file_type is not None:
+        extension = file_type.strip().lower().lstrip(".")
+        if not extension:
+            raise HTTPException(
+                status_code=422,
+                detail="File type cannot be empty.",
+            )
+        documents = [
+            doc for doc in documents
+            if Path(doc["filename"]).suffix.lower() == f".{extension}"
+        ]
+
+    # Stable ordering ensures pagination is predictable.
+    documents.sort(key=lambda doc: doc["document_id"])
+
+    total = len(documents)
+    page = documents[offset:offset + limit]
 
     return DocumentListResponse(
-        documents=documents,
-        total=len(documents),
+        documents=page,
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 @router.delete("/documents/{document_id}")

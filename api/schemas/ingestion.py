@@ -16,3 +16,5 @@ class DocumentSummary(BaseModel):
 class DocumentListResponse(BaseModel):
     documents: list[DocumentSummary]
     total: int = Field(ge=0)
+    limit: int = Field(gt=0, le=100)
+    offset: int = Field(ge=0)
