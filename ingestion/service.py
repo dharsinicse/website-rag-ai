@@ -152,6 +152,150 @@ class IngestionService:
             "status": "indexed",
         }
 
+    def replace_document(
+        self,
+        old_source: str,
+        new_file_path: str,
+        metadata: dict[str, Any] | None,
+        vector_path: str,
+        keyword_path: str,
+    ) -> dict[str, Any]:
+        """Replace an indexed source atomically as far as the stores allow."""
+        if not old_source:
+            raise ValueError("Old source cannot be empty")
+
+        path = Path(new_file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {new_file_path}")
+
+        vector_store = self.vector_store
+        keyword_store = self.keyword_store
+
+        old_vector_count = sum(
+            item.get("source") == old_source
+            for item in vector_store.metadata
+        )
+        old_keyword_count = sum(
+            item.get("source") == old_source
+            for item in keyword_store.metadata
+        )
+
+        if old_vector_count != old_keyword_count:
+            raise RuntimeError(
+                "Vector and keyword indexes are inconsistent; "
+                "replacement was not performed."
+            )
+
+        if old_vector_count == 0:
+            return {
+                "source": old_source,
+                "chunks": 0,
+                "status": "not_found",
+            }
+
+        # Prepare the replacement before modifying either live store.
+        file_hash = self.calculate_file_hash(str(path))
+
+        for item in keyword_store.metadata:
+            item_metadata = item.get("metadata", {})
+            if (
+                item.get("source") != old_source
+                and item_metadata.get("file_hash") == file_hash
+            ):
+                return {
+                    "source": str(path),
+                    "chunks": 0,
+                    "status": "duplicate",
+                }
+
+        text = self.load_file(str(path))
+        document_metadata = {
+            **(metadata or {}),
+            "document_type": path.suffix.lower().lstrip("."),
+            "file_hash": file_hash,
+        }
+
+        processed = self.document_processor.process(
+            text=text,
+            source=str(path),
+            title=path.stem,
+            metadata=document_metadata,
+        )
+        chunks = processed.chunks
+
+        if not chunks:
+            return {
+                "source": str(path),
+                "chunks": 0,
+                "status": "empty",
+            }
+
+        embeddings = self.embedding_service.embed_chunks(chunks)
+
+        chunk_metadata = [
+            {
+                "text": chunk.text,
+                "source": chunk.source,
+                "title": chunk.title,
+                "heading": chunk.heading,
+                "page": chunk.page,
+                "chunk_index": chunk.chunk_index,
+                "metadata": chunk.metadata,
+            }
+            for chunk in chunks
+        ]
+
+        # Save references/copies needed to restore the live stores.
+        original_vectors = vector_store.index
+        original_vector_metadata = list(vector_store.metadata)
+        original_documents = list(keyword_store.documents)
+        original_keyword_metadata = list(keyword_store.metadata)
+        original_tokens = list(keyword_store.tokenized_documents)
+        original_bm25 = keyword_store.bm25
+
+        try:
+            vector_deleted = vector_store.delete_by_source(old_source)
+            keyword_deleted = keyword_store.delete_by_source(old_source)
+
+            if (
+                vector_deleted != old_vector_count
+                or keyword_deleted != old_keyword_count
+                or vector_deleted != keyword_deleted
+            ):
+                raise RuntimeError(
+                    "Vector and keyword deletion counts do not match."
+                )
+
+            vector_store.add(
+                vectors=embeddings,
+                metadata=chunk_metadata,
+            )
+            keyword_store.add(
+                texts=[chunk.text for chunk in chunks],
+                metadata=chunk_metadata,
+            )
+
+            save_staged_indexes(
+                vector_store=vector_store,
+                keyword_store=keyword_store,
+                vector_path=vector_path,
+                keyword_path=keyword_path,
+            )
+        except Exception:
+            vector_store.index = original_vectors
+            vector_store.metadata = original_vector_metadata
+            keyword_store.documents = original_documents
+            keyword_store.metadata = original_keyword_metadata
+            keyword_store.tokenized_documents = original_tokens
+            keyword_store.bm25 = original_bm25
+            raise
+
+        return {
+            "source": str(path),
+            "chunks": len(chunks),
+            "status": "replaced",
+        }
+
     def delete_document(
         self,
         source: str,

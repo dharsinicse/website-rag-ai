@@ -230,6 +230,138 @@ def get_document(document_id: str):
 
     return DocumentSummary(**document)
 
+
+@router.put(
+    "/documents/{document_id}/replace",
+    response_model=IngestionResponse,
+)
+async def replace_document(
+    document_id: str,
+    file: UploadFile = File(...),
+):
+    """Replace an indexed document while preserving its document ID."""
+    settings = get_settings()
+    upload_dir = Path(settings.upload_dir)
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+
+    filename = Path(file.filename or "").name
+    extension = Path(filename).suffix.lower()
+
+    if not filename or extension not in ALLOWED_EXTENSIONS:
+        await file.close()
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type.",
+        )
+
+    pipeline = get_rag_pipeline()
+    keyword_store = pipeline.retriever.hybrid_retriever.keyword_store
+
+    matching_sources = {
+        item.get("source")
+        for item in keyword_store.metadata
+        if item.get("metadata", {}).get("document_id") == document_id
+        and item.get("source")
+    }
+
+    if not matching_sources:
+        await file.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found.",
+        )
+
+    if len(matching_sources) != 1:
+        await file.close()
+        raise HTTPException(
+            status_code=409,
+            detail="Document ID maps to multiple sources.",
+        )
+
+    old_source = next(iter(matching_sources))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    new_path = upload_dir / f"{uuid4().hex}{extension}"
+    size = 0
+
+    try:
+        with new_path.open("wb") as destination:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+
+                size += len(chunk)
+                if size > max_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File exceeds the configured size limit.",
+                    )
+
+                destination.write(chunk)
+
+        if size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is empty.",
+            )
+
+        service = get_ingestion_service()
+        result = service.replace_document(
+            old_source=old_source,
+            new_file_path=str(new_path),
+            metadata={
+                "document_id": document_id,
+                "original_filename": filename,
+            },
+            vector_path=settings.vector_index_path,
+            keyword_path=settings.keyword_index_path,
+        )
+
+        if result["status"] == "not_found":
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found.",
+            )
+
+        if result["status"] == "duplicate":
+            raise HTTPException(
+                status_code=409,
+                detail="This document has already been indexed.",
+            )
+
+        if result["status"] != "replaced":
+            raise HTTPException(
+                status_code=422,
+                detail="No indexable text was found in the replacement file.",
+            )
+
+        # The replacement is persisted. Only now remove the old uploaded file.
+        resolved_upload_dir = upload_dir.resolve()
+        old_path = Path(old_source).resolve()
+
+        if old_path.parent == resolved_upload_dir and old_path.is_file():
+            old_path.unlink(missing_ok=True)
+
+        return IngestionResponse(
+            document_id=document_id,
+            filename=filename,
+            status="replaced",
+            chunks=result["chunks"],
+            message="Document replaced and re-indexed successfully.",
+        )
+
+    except HTTPException:
+        new_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        new_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Document replacement failed.",
+        ) from exc
+    finally:
+        await file.close()
+
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str):
     """Delete an indexed document by its generated ID."""
